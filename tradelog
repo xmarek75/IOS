@@ -1,0 +1,198 @@
+#!/bin/sh
+
+export POSIXLY_CORRECT=yes
+export LC_NUMERIC=en_US.UTF-8
+
+print_help()
+{
+  echo "Usage:  tradelog [-h|--help] [FILTR] [PŘÍKAZ] [LOG [LOG2 [...]]"
+  echo ""
+  echo "PŘÍKAZ může být jeden z:"
+  echo "list-tick   – výpis seznamu vyskytujících se burzovních symbolů, tzv. “tickerů”."
+  echo "profit      – výpis celkového zisku z uzavřených pozic."
+  echo "pos         – výpis hodnot aktuálně držených pozic seřazených sestupně dle hodnoty."
+  echo "last-price  – výpis poslední známé ceny pro každý ticker."
+  echo "hist-ord    – výpis histogramu počtu transakcí dle tickeru."
+  echo "graph-pos   – výpis grafu hodnot držených pozic dle tickeru."
+  echo "============================================================================================        "
+  echo "FILTR může být kombinace následujících:"
+  echo "-a DATETIME   – after: jsou uvažovány pouze záznamy PO tomto datu (bez tohoto data). "
+  echo "                DATETIME je formátu YYYY-MM-DD HH:MM:SS."
+  echo "-b DATETIME   – before: jsou uvažovány pouze záznamy PŘED tímto datem (bez tohoto data)."
+  echo "-t TICKER     – jsou uvažovány pouze záznamy odpovídající danému tickeru. Při více výskytech přepínače se bere množina všech uvedených tickerů."
+  echo "-w WIDTH      – u výpisu grafů nastavuje jejich šířku, tedy délku nejdelšího řádku na WIDTH. "
+  echo "                Tedy, WIDTH musí být kladné celé číslo. Více výskytů přepínače je chybné spuštění."
+  echo "-h a --help   – vypíšou nápovědu s krátkým popisem každého příkazu a přepínače."
+
+}
+#promenne
+COMMAND=""
+WIDTH=""
+AFTER_DATE_TIME="0000-00-00 00:00:00"
+BEFORE_DATE_TIME="9999-99-99 99:99:99"
+LOG_FILES=""
+LOG_GZ_FILES=""
+TICKER=0
+TICKER_LIST=""
+FINAL=""
+# zpracovani parametru, do promennych
+
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+  list-tick | profit | pos | last-price | hist-ord | graph-pos)
+    COMMAND="$1"
+    shift
+    ;;
+  -h | --help)
+    print_help
+    exit 0
+    ;;
+  -w)
+    WIDTH="$2"
+    shift
+    shift
+    ;;
+  -a)
+    AFTER_DATE_TIME="$2"
+    shift
+    shift
+    ;;
+  -b)
+    BEFORE_DATE_TIME="$2"
+    shift
+    shift
+    ;;
+  -t)
+    if [ TICKER = 0 ]; then 
+    TICKER="$2"
+    else
+    TICKER="$TICKER\|$2"
+    fi
+    shift
+    shift
+    ;;
+  *.log)
+    LOG_FILES="$1 $LOG_FILES"
+    shift
+    ;;
+  *.log.gz)
+    LOG_GZ_FILES="$1 $LOG_GZ_FILES"
+    shift
+    ;;
+  *)
+  echo "wrong input"
+  exit 0
+  ;;
+  esac
+done
+
+  
+if [ "$TICKER" = 0 ]; then 
+    TICKER=""
+
+fi 
+#echo $TICKER
+TICK_FILTER="grep '^.*;\($TICKER\)'"
+#nasteni logu do promenne
+READ_INPUT="$(cat $LOG_FILES)"
+#napise vysledek filtrovani
+VYSLEDEK="$(echo "$READ_INPUT" | awk -F ';' -v A_TIME="$AFTER_DATE_TIME" -v B_TIME="$BEFORE_DATE_TIME" '{if (A_TIME<$1 && B_TIME>$1) { print $0 } }' | eval "$TICK_FILTER")"
+
+FINAL="$(echo "$VYSLEDEK")"
+
+case "$COMMAND" in
+  list-tick)
+    list_tick="$(echo "$VYSLEDEK" | awk -F ';' '{print $2}' | sort -u)"
+    FINAL="$(echo "$list_tick")"
+    ;;
+  profit)
+  prof="$(echo "$VYSLEDEK" | awk -F ';' -v profit=0.000  '{if ($3 == "buy"){ profit-=$4*$6}else{profit+=$4*$6}}END{printf "%.2f", profit}')"
+  
+  FINAL=$(printf "%.2f" "$prof")
+  ;;
+  pos)
+  
+  last_price="$(echo "$VYSLEDEK" | sort -r | sort -t ';' -k 2,2 -u | awk -F ';' '{print $4","}')"
+  list_tick="$(echo "$VYSLEDEK" | awk -F ';' '{print $2}' | sort -u)"
+  sorted=$(echo "$VYSLEDEK" | sort -t ';' -k 2,2 )
+  amount=$(echo "$sorted" |                       \
+                                                  awk \
+                                                  -F ';' \
+                                                  ' {
+                                                      if(NR==1){ticker=$2}
+                                                      if(ticker == $2 ){
+                                                        if($3 == "buy"){
+                                                          value+=$6
+                                                        }
+                                                        else{value-=$6}
+                                                        
+                                                      }
+                                                      else{
+                                                        
+                                                        ticker=$2
+                                                        value=0
+                                                        if($3 == "buy"){
+                                                          value+=$6
+                                                        }
+                                                        else{value-=$6}
+                                                        }
+                                                    num = sprintf("%.2f", value)
+                                                    price = sprintf("%.2f", $4)
+                                                    position = num * price 
+                                                    printf("%s: %s : %.2f\n",$1, $2, position)
+                                                    }
+                                                    
+                                                    ')
+  correct_amount=$(echo "$amount" | sort -r | sort -t ':' -k 4,4 -u | awk -F ':' '{print ""$4"\t : "$5""}')
+  sorted_correct_amount=$(echo "$correct_amount" | sort -t ':' -k 2,2 -n -r)
+  longest_number=$(echo "$sorted_correct_amount" | \
+   awk \
+   -F ':' \
+   '{ 
+      number=sprintf("%.2f", $2)
+      if(length(number) > longestnum) {
+        longestnum=length(number)
+      }
+   } END {
+     print longestnum
+     }')
+  FINAL=$(echo "$sorted_correct_amount" | \
+    awk \
+    -F ':' \
+    -v size_of_num="$longest_number" \
+    '{
+      number=sprintf("%.2f", $2)
+      printf("%s : %*s\n", $1, size_of_num, number)
+    }')
+
+  ;;
+  last-price) 
+  last_price="$(echo "$VYSLEDEK" | sort -r | sort -t ';' -k 2,2 -u | awk -F ';' '{print ""$2"\t : "$4""}')"
+  #zjisteni nejdelsiho cisla
+  longest_number=$(echo "$last_price" | \
+   awk \
+   -F ':' \
+   '{ 
+      number=sprintf("%.2f", $2)
+      if(length(number) > longestnum) {
+        longestnum=length(number)
+      }
+   } END {
+     print longestnum
+     }')
+  FINAL=$(echo "$last_price" | \
+    awk \
+    -F ':' \
+    -v size_of_num="$longest_number" \
+    '{
+      number=sprintf("%.2f", $2)
+      printf("%s : %*s\n", $1, size_of_num, number)
+    }')
+  ;;
+  hist-ord) 
+  ;;
+  graph-pos)
+  ;;
+esac
+echo "$FINAL"
